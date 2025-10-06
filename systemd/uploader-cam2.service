@@ -1,0 +1,14 @@
+[Unit]
+Description=Upload cam2 segments from RAM to S3 (delete even on failure)
+After=network-online.target seg-cam2.service
+Wants=network-online.target seg-cam2.service
+
+[Service]
+User=visd
+ExecStart=/usr/local/bin/uploader-cam2.sh
+Restart=always
+RestartSec=2
+LogRateLimitIntervalSec=0
+
+[Install]
+WantedBy=multi-user.target

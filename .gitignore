@@ -1,0 +1,4 @@
+# never commit secrets
+**/.aws/
+*.swp
+*~

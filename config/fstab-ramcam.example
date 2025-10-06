@@ -1,0 +1,1 @@
+tmpfs /mnt/ramcam tmpfs rw,nosuid,nodev,noexec,relatime,size=768M,mode=0755 0 0

@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+import argparse, subprocess, sys, os, re, time, urllib.request
+
+CAMS = {
+  "cam1": {
+    "units": ["seg-cam1.service","uploader-cam1.service"],
+    "url": "http://192.168.1.33/stream",
+    "ramdir": "/mnt/ramcam/cam1",
+    "seg_script": "/usr/local/bin/seg-cam1.sh",
+  },
+  "cam2": {
+    "units": ["seg-cam2.service","uploader-cam2.service"],
+    "url": "http://192.168.1.36/stream",
+    "ramdir": "/mnt/ramcam/cam2",
+    "seg_script": "/usr/local/bin/seg-cam2.sh",
+  },
+}
+ALL_UNITS = [u for c in CAMS.values() for u in c["units"]]
+
+def sh(cmd):
+    # Echo the exact command, then run it
+    print("$ " + " ".join(cmd))
+    return subprocess.run(cmd, check=False).returncode
+
+def units_for(target):
+    if target == "all": return ALL_UNITS
+    if target in CAMS:  return CAMS[target]["units"]
+    # explicit unit name
+    if target.endswith(".service"): return [target]
+    # allow bare unit names like seg-cam1
+    if target in [u.replace(".service","") for u in ALL_UNITS]:
+        return [target + ".service"]
+    sys.exit(f"Unknown target: {target}")
+
+def cmd_start(args):  [sh(["systemctl","start",u])   for u in units_for(args.target)]
+def cmd_stop(args):   [sh(["systemctl","stop",u])    for u in units_for(args.target)]
+def cmd_restart(args):[sh(["systemctl","restart",u]) for u in units_for(args.target)]
+def cmd_enable(args): [sh(["systemctl","enable",u])  for u in units_for(args.target)]
+def cmd_disable(args):[sh(["systemctl","disable",u]) for u in units_for(args.target)]
+
+def cmd_status(args):
+    units = units_for(args.target) if args.target else ALL_UNITS
+    sh(["systemctl","is-enabled",*units])
+    sh(["systemctl","is-active",*units])
+    for u in units:
+        sh(["systemctl","status",u,"--no-pager","-l","-n","5"])
+
+def cmd_logs(args):
+    units = units_for(args.target)
+    base = ["journalctl",*(sum([["-u",u] for u in units],[]))]
+    if args.follow: base.append("-f")
+    else: base += ["-n", str(args.lines)]
+    base.append("--no-pager")
+    sys.exit(subprocess.run(base).returncode)
+
+def cmd_health(args):
+    sys.exit(subprocess.run(["/usr/local/bin/cctv-health-snap.sh"]).returncode)
+
+def cmd_lsram(args):
+    targets = ["cam1","cam2"] if args.target=="all" else [args.target]
+    for t in targets:
+        if t not in CAMS: sys.exit(f"Unknown cam: {t}")
+        d = CAMS[t]["ramdir"]
+        print(f"\n# {t}: {d}")
+        sh(["bash","-lc",f"ls -lh {d} | tail -n +1 || true"])
+
+def cmd_clean(args):
+    targets = ["cam1","cam2"] if args.target=="all" else [args.target]
+    for t in targets:
+        if t not in CAMS: sys.exit(f"Unknown cam: {t}")
+        d = CAMS[t]["ramdir"]
+        sh(["bash","-lc",f"rm -f {d}/*.ts {d}/*.mp4 2>/dev/null || true"])
+
+def cmd_killgst(args):
+    # Kill gst-launch tied to our seg scripts
+    sh(["bash","-lc", r"pkill -f '/usr/bin/gst-launch-1.0.*seg-cam' || true"])
+
+def cmd_fixperms(args):
+    sh(["bash","-lc","mkdir -p /mnt/ramcam/cam1 /mnt/ramcam/cam2"])
+    sh(["bash","-lc","chown -R visd:visd /mnt/ramcam"])
+
+def read_seg(seg_script):
+    with open(seg_script,"r") as f: return f.read()
+
+def write_seg(seg_script, txt):
+    with open(seg_script,"w") as f: f.write(txt)
+    os.chmod(seg_script, 0o755)
+
+def cmd_getdur(args):
+    if args.target not in CAMS: sys.exit("Use cam1 or cam2")
+    txt = read_seg(CAMS[args.target]["seg_script"])
+    m = re.search(r"max-size-time=(\d+)", txt)
+    if not m: sys.exit("max-size-time not found")
+    ns = int(m.group(1))
+    secs = ns/1_000_000_000
+    print(int(secs))
+
+def cmd_setdur(args):
+    if args.target not in CAMS: sys.exit("Use cam1 or cam2")
+    ns = int(args.seconds)*1_000_000_000
+    seg = CAMS[args.target]["seg_script"]
+    txt = read_seg(seg)
+    new = re.sub(r"max-size-time=\d+", f"max-size-time={ns}", txt)
+    if new==txt: print("No change (already set?)")
+    else:
+        write_seg(seg, new)
+        print(f"Updated {seg}")
+    # Restart only the segmenter for that cam
+    seg_unit = [u for u in CAMS[args.target]["units"] if u.startswith("seg-")][0]
+    sh(["systemctl","restart",seg_unit])
+
+def cmd_pingcam(args):
+    if args.target not in CAMS: sys.exit("Use cam1 or cam2")
+    url = CAMS[args.target]["url"]
+    try:
+        req = urllib.request.Request(url, method="HEAD")
+        with urllib.request.urlopen(req, timeout=3) as r:
+            print(f"{args.target} {url} → {r.status}")
+    except Exception as e:
+        print(f"{args.target} {url} → ERROR: {e}")
+        sys.exit(1)
+
+INFO_TEXT = """\
+NAME
+  visdcam — tiny supervisor for your two ESP32 cams on the Pi
+
+GRAMMAR
+  visdcam <verb> <target> [options]
+
+TARGETS
+  cam1, cam2, all
+  (or explicit units like seg-cam1.service, uploader-cam2.service)
+
+VERBS
+  start|stop|restart <cam|all>         # control seg+uploader for that cam
+  enable|disable <cam|all>             # toggle boot start
+  status [cam|all]                     # show enabled/active + brief status
+  logs <cam|unit> [--follow] [--lines N]
+  health                               # cctv-health-snap.sh
+  pingcam <cam>                        # HEAD http://.../stream
+  lsram [cam|all]                      # list RAM files
+  clean [cam|all]                      # rm RAM files
+  killgst                              # kill stray gst-launch
+  fixperms                             # ensure /mnt/ramcam ownership/dirs
+  getdur <cam>                         # print current segment seconds
+  setdur <cam> <seconds>               # update max-size-time and restart seg
+  info|actions                         # print this help
+
+MAPPING
+  cam1 → seg-cam1.service, uploader-cam1.service, http://192.168.1.33/stream, /mnt/ramcam/cam1
+  cam2 → seg-cam2.service, uploader-cam2.service, http://192.168.1.36/stream, /mnt/ramcam/cam2
+"""
+
+def cmd_info(args):
+    print(INFO_TEXT)
+
+def main():
+    p = argparse.ArgumentParser(add_help=False)
+    sub = p.add_subparsers(dest="verb")
+
+    for v in ["start","stop","restart","enable","disable"]:
+        sp = sub.add_parser(v)
+        sp.add_argument("target")
+        sp.set_defaults(func=globals()[f"cmd_{v}"])
+
+    sp = sub.add_parser("status"); sp.add_argument("target", nargs="?"); sp.set_defaults(func=cmd_status)
+
+    sp = sub.add_parser("logs")
+    sp.add_argument("target")
+    sp.add_argument("--follow", action="store_true")
+    sp.add_argument("--lines", type=int, default=200)
+    sp.set_defaults(func=cmd_logs)
+
+    sub.add_parser("health").set_defaults(func=cmd_health)
+
+    sp = sub.add_parser("pingcam"); sp.add_argument("target"); sp.set_defaults(func=cmd_pingcam)
+
+    sp = sub.add_parser("lsram"); sp.add_argument("target", nargs="?", default="all"); sp.set_defaults(func=cmd_lsram)
+    sp = sub.add_parser("clean"); sp.add_argument("target", nargs="?", default="all"); sp.set_defaults(func=cmd_clean)
+
+    sub.add_parser("killgst").set_defaults(func=cmd_killgst)
+    sub.add_parser("fixperms").set_defaults(func=cmd_fixperms)
+
+    sp = sub.add_parser("getdur"); sp.add_argument("target"); sp.set_defaults(func=cmd_getdur)
+    sp = sub.add_parser("setdur"); sp.add_argument("target"); sp.add_argument("seconds"); sp.set_defaults(func=cmd_setdur)
+
+    for v in ["info","actions","--info","-h","--help"]:
+        sub.add_parser(v).set_defaults(func=cmd_info)
+
+    args, extra = p.parse_known_args()
+    if not args.verb:
+        cmd_info(args) ; sys.exit(0)
+    args.func(args)
+
+if __name__ == "__main__":
+    main()
