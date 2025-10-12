@@ -1,15 +1,13 @@
 [Unit]
 Description=Upload cam1 segments from RAM to S3 (delete even on failure)
-After=network-online.target seg-cam1.service
-Wants=network-online.target seg-cam1.service
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 User=visd
 ExecStart=/usr/local/bin/uploader-cam1.sh
 Restart=always
 RestartSec=2
-# keep logs reasonable
-LogRateLimitIntervalSec=0
 
 [Install]
 WantedBy=multi-user.target

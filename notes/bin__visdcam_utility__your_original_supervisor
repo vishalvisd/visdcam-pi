@@ -1,0 +1,19 @@
+Keep your working version (the one you pasted), i.e. with verbs:
+
+start|stop|restart <cam|all>
+
+enable|disable <cam|all>
+
+status [cam|all]
+
+logs <cam|unit> [--follow] [--lines N]
+
+health, pingcam <cam>, lsram [cam|all], clean [cam|all],
+
+killgst, fixperms
+
+getdur <cam>, setdur <cam> <seconds>
+
+info|actions|-h|--help
+
+If you want me to paste that file again verbatim, say the word — but since you were happy with it, I’m leaving it unchanged.

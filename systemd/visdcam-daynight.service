@@ -1,0 +1,8 @@
+[Unit]
+Description=Set ESP32-Cam day/night mode (calls both cams)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/visdcam-daynight.sh

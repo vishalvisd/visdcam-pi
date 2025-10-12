@@ -1,0 +1,12 @@
+[Unit]
+Description=Limit egress on eth0 so uploads don't swamp uplink
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/net-shaper.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

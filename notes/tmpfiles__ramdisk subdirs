@@ -1,0 +1,9 @@
+etc/tmpfiles.d/ramcam.conf
+D /mnt/ramcam 0755 root root -
+d /mnt/ramcam/cam1 0755 visd visd -
+d /mnt/ramcam/cam2 0755 visd visd -
+
+
+Install with sudo systemd-tmpfiles --create /etc/tmpfiles.d/ramcam.conf
+
+(Your tmpfs mount itself should already be in /etc/fstab. Keep it at ~768 MB per earlier sizing.)

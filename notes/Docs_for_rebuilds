@@ -1,0 +1,119 @@
+# Install on a fresh Raspberry Pi (Debian/RPiOS Bookworm/Trixie)
+
+## 0) OS prep
+```bash
+sudo timedatectl set-timezone Asia/Kolkata
+sudo apt-get update
+sudo apt-get install -y \
+  gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+  gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly \
+  awscli curl jq lsof
+
+
+ 1) RAM disk
+
+Add to /etc/fstab (if not present):
+
+tmpfs   /mnt/ramcam   tmpfs   size=768m,mode=0755   0  0
+
+
+Then:
+
+sudo mkdir -p /mnt/ramcam
+sudo mount -a
+sudo install -m 644 etc/tmpfiles.d/ramcam.conf /etc/tmpfiles.d/ramcam.conf
+sudo systemd-tmpfiles --create /etc/tmpfiles.d/ramcam.conf
+
+2) Scripts & services
+sudo install -m 755 scripts/*.sh /usr/local/bin/
+sudo install -m 644 systemd/*.service /etc/systemd/system/
+sudo install -m 644 systemd/*.timer   /etc/systemd/system/  || true
+sudo install -m 755 bin/visdcam /usr/local/bin/visdcam
+sudo systemctl daemon-reload
+
+3) AWS credentials
+
+See docs/AWS_CREDS.md, then test:
+
+aws sts get-caller-identity
+
+4) Enable services
+# core
+sudo systemctl enable --now seg-cam1.service seg-cam2.service
+sudo systemctl enable --now uploader-cam1.service uploader-cam2.service
+
+# day/night timer
+sudo systemctl enable --now visdcam-daynight.timer
+
+# optional: egress shaper
+sudo systemctl enable --now net-shaper.service
+
+5) Verify
+visdcam status
+visdcam health
+watch -n2 'ls -lh /mnt/ramcam/cam1 | tail -n +1; echo; ls -lh /mnt/ramcam/cam2 | tail -n +1'
+
+6) Optional: prefer Ethernet, keep Wi-Fi idle
+# Make sure eth0 default route wins
+ip route show default    # should prefer dev eth0 metric ~100 vs wlan0 ~600
+
+# If you want Wi-Fi down permanently:
+sudo nmcli radio wifi off  # or network manager appropriate to your image
+# (You can also disable wpa_supplicant@wlan0 if your image uses it.)
+
+
+### `docs/AWS_CREDS.md`
+```md
+# Configure AWS credentials on the Pi
+
+## Option A: `aws configure`
+```bash
+aws configure
+# AWS Access Key ID [None]: AKIA...
+# AWS Secret Access Key [None]: ***********
+# Default region name [None]: ap-south-1
+# Default output format [None]: json
+
+
+This writes:
+
+~/.aws/credentials (keys)
+
+~/.aws/config (region/output)
+
+Option B: drop files directly
+
+~/.aws/credentials
+
+[default]
+aws_access_key_id = AKIA...
+aws_secret_access_key = ...
+
+
+~/.aws/config
+
+[default]
+region = ap-south-1
+output = json
+
+Sanity test
+aws s3 ls
+aws sts get-caller-identity
+
+
+### `docs/TROUBLESHOOTING.md` (optional)
+```md
+# Troubleshooting
+
+## Segmenter keeps restarting
+- `journalctl -u seg-cam1 -n 100 --no-pager`
+- If you see `multipartdemux ... no valid streams`, the camera might be busy or its `/stream` momentarily blank. Systemd will retry forever (`Restart=always`).
+- Make sure your pipeline has **no fixed width/height** if you change framesize on ESPs.
+
+## “Objects but 0 bytes” on S3
+- Ensure uploader checks for stable size (the scripts here do a 1-second size check).
+- Confirm AWS creds and bucket policy.
+
+## Throttling uploads
+- `sudo systemctl status net-shaper.service`
+- Change rate in `/usr/local/bin/net-shaper.sh`, then `sudo systemctl restart net-shaper.service`.

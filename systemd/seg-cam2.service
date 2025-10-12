@@ -1,5 +1,5 @@
 [Unit]
-Description=Segmenter cam2 (HTTP MJPEG -> x264 -> 180s MP4 to RAM)
+Description=Segmenter cam2 (HTTP MJPEG -> x264 -> TS to RAM)
 After=network-online.target tmpfiles-setup.service
 Wants=network-online.target
 RequiresMountsFor=/mnt/ramcam
