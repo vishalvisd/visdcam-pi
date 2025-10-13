@@ -1,7 +1,7 @@
 # visdcam-pi
 
 ESP32-Cam recorders on a Raspberry Pi.  
-MJPEG → H.264 (x264) → **MPEG-TS segments** on RAM disk → BlackBlaze B2.
+MJPEG → H.264 (x264) → **MPEG-TS segments** on RAM disk → BackBlaze B2.
 
 **Why TS?** If a camera dies mid-segment, the resulting clip is still playable (best chance to capture the “last moment”).
 
