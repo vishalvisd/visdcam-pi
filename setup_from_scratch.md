@@ -1,29 +1,51 @@
-# Rebuilding the Pi from scratch (USB flash drive) — visd-cctv end-to-end
+# Rebuilding the Pi from scratch (USB flash drive) — **visd-cctv** end-to-end
 
-* 2 ESP32-Cam MJPEG streams → Pi encodes to H.264 in MPEG-TS, segments to /mnt/ramcam (tmpfs)
-* Uploaders push segments to Backblaze B2 via the S3-compatible endpoint (awscli v2)
-* A tiny supervisor visdcam for common operations, including get/set segment duration
-* A Day/Night preset timer calling the ESP endpoints at 06:00 and 18:00
-* Wi-Fi disabled (Ethernet-only)
-* Everything persists across reboots
+This is a single, copy-paste friendly runbook to recreate the exact working setup we finished with:
+
+* 2 ESP32-Cam MJPEG streams → Pi encodes to **H.264 in MPEG-TS**, segments to **/mnt/ramcam** (tmpfs)
+    
+* Uploaders push segments to **Backblaze B2** via the S3-compatible endpoint (awscli v2)
+    
+* A tiny supervisor `visdcam` for common operations, including **get/set segment duration**
+    
+* A **Day/Night preset** timer calling the ESP endpoints at **06:00** and **18:00**
+    
+* **Wi-Fi disabled** (Ethernet-only)
+    
+* Everything **persists across reboots**
+    
+
 Assumptions you can edit inline:
-* User = visd
-* Cameras: cam1=192.168.1.33, cam2=192.168.1.36
-* B2 bucket = visd-cctv, region = ca-east-006 (endpoint https://s3.ca-east-006.backblazeb2.com)
-* Default segment length = 20s (change later with visdcam setdur cam1 180, etc.)
-* Upload throttle = 300 KiB/s per camera (change later in the unit files)
 
-0) Base OS & quick checks (already booted from USB drive)
+* **User** = `visd`
+    
+* **Cameras**: `cam1=192.168.1.33`, `cam2=192.168.1.36`
+    
+* **B2 bucket** = `visd-cctv`, **region** = `ca-east-006` (endpoint `https://s3.ca-east-006.backblazeb2.com`)
+    
+* **Default segment length** = **20s** (change later with `visdcam setdur cam1 180`, etc.)
+    
+* **Upload throttle** = **300 KiB/s per camera** (change later in the unit files)
+    
 
+* * *
+
+## 0) Base OS & quick checks (already booted from USB drive)
+
+```bash
 # Optional: set timezone for day/night timer
 sudo timedatectl set-timezone Asia/Kolkata
 
 # Verify versions (info only)
 gst-launch-1.0 --version
 aws --version
+```
 
-1) Packages
+* * *
 
+## 1) Packages
+
+```bash
 sudo apt-get update
 sudo apt-get install -y \
   gstreamer1.0-tools \
@@ -32,9 +54,13 @@ sudo apt-get install -y \
   gstreamer1.0-plugins-bad \
   gstreamer1.0-plugins-ugly \
   awscli pv lsof curl tzdata
+```
 
-2) RAM disk for segments
+* * *
 
+## 2) RAM disk for segments
+
+```bash
 # Create and mount RAM area (1 GiB tmpfs)
 sudo mkdir -p /mnt/ramcam/cam1 /mnt/ramcam/cam2
 echo 'tmpfs /mnt/ramcam tmpfs defaults,size=1024m,noatime,mode=1777 0 0' | sudo tee -a /etc/fstab
@@ -42,10 +68,15 @@ sudo systemctl daemon-reload
 sudo mount -a
 sudo chown -R visd:visd /mnt/ramcam
 df -h /mnt/ramcam
+```
 
-3) Backblaze B2 — awscli profile (b2)
-3a) Credentials & config
+* * *
 
+## 3) Backblaze B2 — awscli profile (`b2`)
+
+### 3a) Credentials & config
+
+```bash
 mkdir -p ~/.aws
 
 # Put your Backblaze Application Key ID / Key HERE
@@ -66,11 +97,17 @@ CFG
 
 # Sanity check: list buckets via the B2 S3 endpoint
 AWS_PROFILE=b2 aws --endpoint-url https://s3.ca-east-006.backblazeb2.com s3 ls
-You should see the bucket visd-cctv. If not, create it in the Backblaze UI and rerun the check.
+```
 
-4) Segmenter scripts (per camera)
-These wrap the gst-launch-1.0 pipeline and read segment seconds from /etc/default/seg-cam{1,2}.
+You should see the bucket `visd-cctv`. If not, create it in the Backblaze UI and rerun the check.
 
+* * *
+
+## 4) Segmenter scripts (per camera)
+
+These wrap the `gst-launch-1.0` pipeline and read **segment seconds** from `/etc/default/seg-cam{1,2}`.
+
+```bash
 # cam1
 sudo tee /usr/local/bin/seg-cam1.sh >/dev/null <<'SH'
 #!/usr/bin/env bash
@@ -130,8 +167,11 @@ exec /usr/bin/gst-launch-1.0 -e \
     async-finalize=true
 SH
 sudo chmod +x /usr/local/bin/seg-cam2.sh
-4a) Per-cam environment files (default SEGMENT_SEC=20)
+```
 
+### 4a) Per-cam environment files (default SEGMENT_SEC=20)
+
+```bash
 sudo tee /etc/default/seg-cam1 >/dev/null <<'ENV'
 # Per-camera overrides for seg-cam1
 SEGMENT_SEC=20
@@ -145,9 +185,13 @@ SEGMENT_SEC=20
 FPS=15
 BITRATE=1000
 ENV
+```
 
-5) Segmenter systemd units
+* * *
 
+## 5) Segmenter systemd units
+
+```bash
 # cam1
 sudo tee /etc/systemd/system/seg-cam1.service >/dev/null <<'UNIT'
 [Unit]
@@ -191,9 +235,13 @@ RestartSec=2s
 [Install]
 WantedBy=multi-user.target
 UNIT
+```
 
-6) Uploaders (Backblaze B2 via awscli S3 endpoint)
+* * *
 
+## 6) Uploaders (Backblaze B2 via awscli S3 endpoint)
+
+```bash
 # cam1
 sudo tee /usr/local/bin/uploader-cam1.sh >/dev/null <<'SH'
 #!/usr/bin/env bash
@@ -303,8 +351,11 @@ while true; do
 done
 SH
 sudo chmod +x /usr/local/bin/uploader-cam2.sh
-6a) Uploader units
+```
 
+### 6a) Uploader units
+
+```bash
 sudo tee /etc/systemd/system/uploader-cam1.service >/dev/null <<'UNIT'
 [Unit]
 Description=Upload cam1 segments from RAM to B2 (delete even on failure)
@@ -352,9 +403,13 @@ Nice=10
 [Install]
 WantedBy=multi-user.target
 UNIT
+```
 
-7) Day/Night preset timer
+* * *
 
+## 7) Day/Night preset timer
+
+```bash
 # Script that calls ESP32-cam preset endpoints and logs responses
 sudo tee /usr/local/bin/visdcam-daynight.sh >/dev/null <<'SH'
 #!/usr/bin/env bash
@@ -405,9 +460,13 @@ Unit=visdcam-daynight.service
 [Install]
 WantedBy=timers.target
 UNIT
+```
 
-8) visdcam helper (simple supervisor + duration get/set)
+* * *
 
+## 8) `visdcam` helper (simple supervisor + duration get/set)
+
+```bash
 sudo tee /usr/local/bin/visdcam >/dev/null <<'PY'
 #!/usr/bin/env python3
 import argparse, subprocess, sys, os, re, time, urllib.request
@@ -578,9 +637,13 @@ if __name__ == "__main__":
     main()
 PY
 sudo chmod +x /usr/local/bin/visdcam
+```
 
-9) Enable everything & start
+* * *
 
+## 9) Enable everything & start
+
+```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now seg-cam1.service seg-cam2.service
 sudo systemctl enable --now uploader-cam1.service uploader-cam2.service
@@ -589,14 +652,21 @@ sudo systemctl enable --now visdcam-daynight.timer
 # Quick health
 visdcam status
 watch -n2 'visdcam lsram'
-(Note) Segments will be ~20s by default. Change any time:
+```
 
+(**Note**) Segments will be **~20s** by default. Change any time:
+
+```bash
 sudo visdcam setdur cam1 180
 sudo visdcam setdur cam2 180
 sudo visdcam getdur cam1
+```
 
-10) Ethernet-only (disable Wi-Fi permanently)
+* * *
 
+## 10) Ethernet-only (disable Wi-Fi permanently)
+
+```bash
 # Disable radio in firmware
 sudo sed -i '/^dtoverlay=disable-wifi$/d' /boot/firmware/config.txt
 echo 'dtoverlay=disable-wifi' | sudo tee -a /boot/firmware/config.txt
@@ -606,19 +676,33 @@ sudo systemctl disable --now wpa_supplicant.service wpa_supplicant@wlan0.service
 sudo systemctl mask wpa_supplicant.service wpa_supplicant@wlan0.service
 
 sudo reboot
+```
+
 After reboot:
 
+```bash
 ip route show default     # should show ONLY via eth0
 ip link | grep -E 'wlan|wl' || echo "No Wi-Fi interfaces present ✓"
+```
 
-11) Backblaze housekeeping (UI)
-In the Backblaze web UI for bucket visd-cctv:
-* Lifecycle: set “Keep only the last 3 days of versions” (or an equivalent rule deleting files older than 3 days).
-* CORS (not required for this pipeline).
-* Public/Private: keep Private; uploads use the b2 profile.
+* * *
 
-12) Handy commands
+## 11) Backblaze housekeeping (UI)
 
+In the Backblaze web UI for bucket **visd-cctv**:
+
+* **Lifecycle**: set “Keep only the last **3 days** of versions” (or an equivalent rule deleting files older than 3 days).
+    
+* **CORS** (not required for this pipeline).
+    
+* **Public/Private**: keep **Private**; uploads use the `b2` profile.
+    
+
+* * *
+
+## 12) Handy commands
+
+```bash
 # Start/Stop/Restart all cam units
 sudo visdcam stop all
 sudo visdcam start all
@@ -634,9 +718,91 @@ AWS_PROFILE=b2 aws --endpoint-url https://s3.ca-east-006.backblazeb2.com s3 ls s
 # Day/Night manual run
 sudo systemctl start visdcam-daynight.service
 journalctl -u visdcam-daynight.service -n 20 --no-pager
+```
 
-That’s it
-With this document you can rebuild the Pi from a blank drive to the exact final working state we had, including Backblaze B2 uploads, RAM-only writes, day/night presets, Ethernet-only networking, and an operator utility to tweak segment length on the fly.
+* * *
+
+### That’s it
+
+# Make sure PI is only consuming RAM and not storage :-
 
 
+## Confirm segments go to RAM (tmpfs)
+```
+mount | grep '/mnt/ramcam'            # should show type tmpfs
+df -h /mnt/ramcam
+systemctl status seg-cam1.service --no-pager -l | grep -A1 'splitmuxsink'
+systemctl status seg-cam2.service --no-pager -l | grep -A1 'splitmuxsink'
+# location= must point to /mnt/ramcam/cam1 and /mnt/ramcam/cam2
 
+```
+
+## Make all system logs volatile (RAM)
+```
+sudo mkdir -p /etc/systemd/journald.conf.d
+sudo tee /etc/systemd/journald.conf.d/volatile.conf >/dev/null <<'CFG'
+[Journal]
+Storage=volatile
+RuntimeMaxUse=64M
+CFG
+
+# Optional: ensure no persistent journal dir remains
+sudo rm -rf /var/log/journal
+
+sudo systemctl restart systemd-journald
+# Verify journal now lives in RAM
+mount | grep '/run/log/journal'
+
+```
+
+## Mount /tmp in RAM (tmpfs)
+```
+sudo systemctl enable --now tmp.mount
+mount | grep ' on /tmp '   # should show type tmpfs
+
+```
+
+## Double-check our units don’t write to disk
+```
+# Should NOT contain any "StandardOutput=append:/path" etc.
+systemctl cat uploader-cam1.service | sed -n '1,200p'
+systemctl cat uploader-cam2.service | sed -n '1,200p'
+systemctl cat seg-cam1.service | sed -n '1,200p'
+systemctl cat seg-cam2.service | sed -n '1,200p'
+
+```
+
+## Runtime verification: watch disk writes
+```
+# Monitor sectors written on your root device (likely sda). MB/s should stay ~0.
+DEV=sda
+bash -lc '
+prev=$(awk -v d="'$DEV'" "$3==d{print \$8}" /proc/diskstats)
+while sleep 1; do
+  now=$(awk -v d="'$DEV'" "$3==d{print \$8}" /proc/diskstats)
+  mbps=$(awk -v n=$now -v p=$prev "BEGIN{print (n-p)*512/1024/1024}")
+  printf "disk %-4s writes: %+8.3f MB/s (sectors delta: %d)\n" "'$DEV'" "$mbps" "$((now-prev))"
+  prev=$now
+done'
+
+```
+
+## Quick spot checks for accidental disk writes
+```
+# Any files in /var/log touched in last 5 min? (should be empty or very few)
+sudo find /var/log -type f -mmin -5 -ls
+
+# Any open files under /var/log by our services? (ideally none)
+sudo lsof +D /var/log 2>/dev/null | egrep 'seg-cam|uploader-cam' || echo "OK: no cam processes writing under /var/log"
+
+```
+
+
+## Reboot & re-verify
+```
+sudo reboot
+# after boot:
+mount | egrep '/mnt/ramcam|/tmp|/run/log/journal'
+visdcam status
+
+```
