@@ -806,3 +806,257 @@ mount | egrep '/mnt/ramcam|/tmp|/run/log/journal'
 visdcam status
 
 ```
+
+
+# visdauto
+## watering
+
+### scripts live at `/home/visd/workspace/RelayController/src`.
+
+
+
+# visdauto — simple home-automation runner (watering @ 7 AM IST)
+
+This folder documents how to (re)create the **visdauto** tooling on a fresh Pi so it can run your relay script every morning at 07:00 IST, and let you trigger/stop it on demand. All logs are written to RAM (tmpfs) to avoid SD-card wear.
+
+## What it does
+
+* Runs `PanelCleanerAndPlantsWatering.py` **every day at 07:00 IST** (no catch-up if the Pi was off).
+    
+* Lets you **start/stop** the job manually.
+    
+* Logs to **/run/visdauto/watering.log** (in RAM; cleared on reboot).
+    
+* Keeps this automation **separate from visdcam**.
+    
+
+* * *
+
+## Prerequisites (checklist)
+
+* User: `visd` exists and owns your code directory.
+    
+* Timezone is IST:
+    
+
+```bash
+timedatectl | grep 'Time zone'
+# If needed:
+sudo timedatectl set-timezone Asia/Kolkata
+```
+
+* Python present at `/usr/bin/python3`:
+    
+
+```bash
+command -v /usr/bin/python3
+# If missing:
+sudo apt-get update && sudo apt-get install -y python3
+```
+
+* Your scripts are present:
+    
+
+```
+/home/visd/workspace/RelayController/src/PanelCleanerAndPlantsWatering.py
+/home/visd/workspace/RelayController/src/GracefullyStopPanelCleanerAndPlantsWatering.py
+```
+
+> Note: they do **not** need to be executable; systemd calls them via `/usr/bin/python3 -u`.
+
+* * *
+
+## Install steps (copy-paste)
+
+### 1) Create the `visdauto` CLI
+
+```bash
+sudo tee /usr/local/bin/visdauto >/dev/null <<'BASH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+visdauto watering enable        # enable 7:00 IST daily schedule
+visdauto watering disable       # disable schedule
+visdauto watering run           # run now (foreground via systemd oneshot)
+visdauto watering stoprun       # run the graceful stop script now
+visdauto watering status        # show unit + timer status
+visdauto watering logs          # tail recent RAM logs
+visdauto watering clearlogs     # truncate RAM log file
+USAGE
+}
+
+[[ $# -lt 2 || "$1" != "watering" ]] && { usage; exit 1; }
+cmd="$2"
+
+case "$cmd" in
+  enable)    sudo systemctl enable --now watering.timer ;;
+  disable)   sudo systemctl disable --now watering.timer ;;
+  run)       sudo systemctl start watering.service ;;
+  stoprun)   sudo systemctl start watering-stop.service ;;
+  status)
+    systemctl status watering.service --no-pager -l -n 5 || true
+    echo
+    systemctl status watering.timer   --no-pager -l -n 5 || true
+    ;;
+  logs)      sudo bash -lc '[[ -f /run/visdauto/watering.log ]] && tail -n 200 /run/visdauto/watering.log || echo "no logs yet"' ;;
+  clearlogs) sudo bash -lc ': >/run/visdauto/watering.log || echo "no log file to clear (it lives in RAM)"' ;;
+  *) usage; exit 1 ;;
+esac
+BASH
+sudo chmod +x /usr/local/bin/visdauto
+```
+
+### 2) Create systemd units (service + timer)
+
+```bash
+# watering.service — runs your main script; logs appended to /run/visdauto/watering.log
+sudo tee /etc/systemd/system/watering.service >/dev/null <<'INI'
+[Unit]
+Description=VISD Auto - Watering (runs your PanelCleanerAndPlantsWatering.py)
+
+[Service]
+Type=oneshot
+User=visd
+Group=visd
+WorkingDirectory=/home/visd/workspace/RelayController/src
+Environment=PYTHONUNBUFFERED=1
+# systemd creates /run/visdauto (owned by visd) before ExecStart
+RuntimeDirectory=visdauto
+# up to 15 minutes for the run
+TimeoutStartSec=900
+# append stdout+stderr to RAM log
+ExecStart=/bin/bash -lc 'exec /usr/bin/python3 -u "/home/visd/workspace/RelayController/src/PanelCleanerAndPlantsWatering.py" >>/run/visdauto/watering.log 2>&1'
+INI
+
+# watering-stop.service — triggers your graceful stop script; logs to same file
+sudo tee /etc/systemd/system/watering-stop.service >/dev/null <<'INI'
+[Unit]
+Description=VISD Auto - Watering STOP (graceful)
+
+[Service]
+Type=oneshot
+User=visd
+Group=visd
+WorkingDirectory=/home/visd/workspace/RelayController/src
+Environment=PYTHONUNBUFFERED=1
+RuntimeDirectory=visdauto
+TimeoutStartSec=300
+ExecStart=/bin/bash -lc 'exec /usr/bin/python3 -u "/home/visd/workspace/RelayController/src/GracefullyStopPanelCleanerAndPlantsWatering.py" >>/run/visdauto/watering.log 2>&1'
+INI
+
+# watering.timer — fire daily at 07:00 IST; no catch-up if missed
+sudo tee /etc/systemd/system/watering.timer >/dev/null <<'INI'
+[Unit]
+Description=VISD Auto - Watering daily 07:00 IST
+
+[Timer]
+OnCalendar=*-*-* 07:00:00
+# If Pi was off at 07:00, do not run on boot
+Persistent=false
+Unit=watering.service
+
+[Install]
+WantedBy=timers.target
+INI
+
+# load everything
+sudo systemctl daemon-reload
+```
+
+* * *
+
+## First run & enable schedule
+
+```bash
+# test one manual run
+visdauto watering run
+# see live logs (RAM)
+visdauto watering logs
+
+# enable the 7AM schedule
+visdauto watering enable
+# confirm the timer
+systemctl list-timers --all | grep watering
+```
+
+* * *
+
+## Day-to-day commands
+
+```bash
+visdauto watering status     # see last run, next run, and unit state
+visdauto watering logs       # tail recent logs from /run/visdauto/watering.log
+visdauto watering clearlogs  # truncate RAM log file
+visdauto watering run        # run now
+visdauto watering stoprun    # trigger graceful stop now
+visdauto watering disable    # stop daily schedule
+visdauto watering enable     # re-enable daily schedule
+```
+
+* * *
+
+## Change the schedule (e.g., 06:30 IST)
+
+```bash
+sudo systemctl edit watering.timer
+# paste:
+# [Timer]
+# OnCalendar=*-*-* 06:30:00
+# (save + exit)
+sudo systemctl daemon-reload
+sudo systemctl restart watering.timer
+visdauto watering status
+```
+
+* * *
+
+## Troubleshooting
+
+* **No logs?** The file lives in RAM and is created on first run: `/run/visdauto/watering.log`.  
+    Run once: `visdauto watering run`, then `visdauto watering logs`.
+    
+* **Service fails immediately**
+    
+    * Check Python path: `command -v /usr/bin/python3`.
+        
+    * Check permissions/paths:
+        
+        * Working dir: `/home/visd/workspace/RelayController/src`
+            
+        * Script: `PanelCleanerAndPlantsWatering.py` (exact name).
+            
+    * Inspect detailed logs:
+        
+        ```bash
+        systemctl status watering.service --no-pager -l
+        journalctl -u watering.service -n 100 --no-pager
+        ```
+        
+* **Timer didn’t run**
+    
+    * Confirm timezone is IST: `timedatectl`.
+        
+    * Check timer state:
+        
+        ```bash
+        systemctl status watering.timer --no-pager -l
+        systemctl list-timers --all | grep watering
+        ```
+        
+* **Logs persist across reboots?** No. They’re on `/run` (tmpfs) by design to protect the SD card.
+    
+
+* * *
+
+## Uninstall
+
+```bash
+visdauto watering disable
+sudo rm -f /etc/systemd/system/watering.service \
+           /etc/systemd/system/watering-stop.service \
+           /etc/systemd/system/watering.timer
+sudo systemctl daemon-reload
+sudo rm -f /usr/local/bin/visdauto
+```
