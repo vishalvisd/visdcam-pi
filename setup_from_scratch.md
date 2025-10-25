@@ -1060,3 +1060,154 @@ sudo rm -f /etc/systemd/system/watering.service \
 sudo systemctl daemon-reload
 sudo rm -f /usr/local/bin/visdauto
 ```
+
+
+# Tailscale
+
+# 1) Install & start Tailscale on the Pi
+
+```bash
+# Install
+curl -fsSL https://tailscale.com/install.sh | sh
+
+# Ensure the daemon runs on boot and start it now
+sudo systemctl enable --now tailscaled
+
+# Bring the node onto your tailnet (opens a URL you approve in any browser)
+sudo tailscale up --hostname=visdpi
+```
+
+After you approve the device, verify:
+
+```bash
+tailscale status
+tailscale ip -4   # note the Tailscale IPv4 (e.g., 100.x.y.z)
+```
+
+# 2) Keep logs RAM-only (journald volatile mode)
+
+(You likely already have this, but here are the checks.)
+
+```bash
+# See current mode: "Storage=volatile" means RAM-only
+grep -E '^[# ]*Storage=' /etc/systemd/journald.conf || true
+systemctl status systemd-journald -n 0 --no-pager
+
+# If NOT volatile, make it so:
+sudo sed -i 's/^[# ]*Storage=.*/Storage=volatile/' /etc/systemd/journald.conf
+sudo systemctl restart systemd-journald
+```
+
+Tailscale logs will live in RAM (journald), and vanish on reboot—no SD wear.
+
+# 3) Make sure OpenSSH server is running
+
+(We’re using your current SSH, not “Tailscale SSH”.)
+
+```bash
+# Install if missing
+sudo apt-get update
+sudo apt-get install -y openssh-server
+
+# Enable & start
+sudo systemctl enable --now ssh
+
+# Quick check
+systemctl is-active ssh && echo "sshd is running"
+```
+
+# 4) Connect from your Mac
+
+* Install the Tailscale app on macOS (from App Store or `brew install --cask tailscale`), log into the same account.
+    
+* In a Terminal:
+    
+    ```bash
+    # Use the 100.x.y.z you saw on the Pi:
+    ssh visd@100.x.y.z
+    ```
+    
+    If you enable **MagicDNS** in the Tailscale admin later, you can also do:
+    
+    ```bash
+    ssh visd@visdpi   # or visdpi.tailnet-<something>.ts.net
+    ```
+    
+
+# 5) Nothing else changes for your workloads
+
+* No router/port-forward changes needed.
+    
+* No traffic shaping or routing is altered for your cams/uploads.
+    
+* Tailscale is idle ~0–1% CPU and ~40–80 MB RAM—well within your budget.
+    
+
+# 6) Useful admin commands (safe to use anytime)
+
+```bash
+# See who’s connected / device’s IPs
+tailscale status
+tailscale ip -4
+
+# Temporarily stop or start the agent
+sudo systemctl stop tailscaled
+sudo systemctl start tailscaled
+
+# Disconnect the device from your tailnet (you’ll need to re-auth)
+sudo tailscale logout
+```
+
+# 7) Optional “belt & suspenders” (don’t change unless you want to)
+
+If you want to be explicit that this node **won’t** act as exit node or advertise routes:
+
+```bash
+sudo tailscale up --hostname=visdpi --advertise-exit-node=false --accept-routes=false
+```
+
+(That’s the default behavior, but this makes it obvious.)
+
+* * *
+
+### FAQs you might ask me later
+
+* **Can I still `sudo` after SSH’ing via Tailscale?** Yes—same as local LAN SSH.
+    
+* **Will Tailscale fill my SD with logs?** No—journald is volatile; logs stay in RAM.
+    
+* **What if I forget the IP?** `tailscale ip -4` on the Pi, or see the device in the Tailscale admin, or enable MagicDNS and use `ssh visd@visdpi`.
+    
+
+If you want to flip to “Tailscale SSH” later (and disable local sshd), I’ll give you a tiny ACL snippet and one `tailscale up --ssh` command.
+
+* * *
+
+
+# Enable “web SSH” to the Pi
+1. In the Tailscale admin → **Access controls (ACLs)**, make sure you have something like:
+    
+
+```json
+{
+  "tagOwners": {
+    "tag:pi": ["you@your-email.com"]   // your Tailscale login
+  },
+  "ssh": [
+    {
+      "action": "accept",
+      "src": ["autogroup:members"],
+      "dst": ["tag:pi"],
+      "users": ["visd"]
+    }
+  ]
+}
+```
+
+2. **Turn on Tailscale SSH on the Pi**  
+    (run once; it keeps journald-only logging as you already set)
+    
+
+```bash
+sudo tailscale up --ssh --hostname=visdpi --advertise-tags=tag:visdpi
+```
