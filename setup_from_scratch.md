@@ -415,24 +415,42 @@ sudo tee /usr/local/bin/visdcam-daynight.sh >/dev/null <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 
-# cams
-C1="192.168.1.33"
-C2="192.168.1.36"
+# Camera IPs
+CAM1=192.168.1.33
+CAM2=192.168.1.36
 
-hour=$(date +%H)
-if (( hour >= 18 || hour < 6 )); then
-  mode="night" ; why="hour=${hour} (>=18 or <6)"
+ts()  { date '+%F %T'; }
+log() { echo "[$(ts)] $*"; }
+
+# First, assert camera power ON via the relay (idempotent)
+log "Asserting camera power ON via relay script"
+if /usr/bin/python3 /home/visd/workspace/RelayController/src/camera_line_power_on.py >/dev/null 2>&1; then
+  log "Relay ON asserted (GPIO set)"
 else
-  mode="day"   ; why="hour=${hour} (>=6 and <18)"
+  log "WARNING: relay ON script failed"
 fi
 
-log(){ printf "[%(%F %T)T] daynight: %s\n" -1 "$*"; }
+# Decide day vs night using IST
+HOUR=$(TZ=Asia/Kolkata date +%H)
+MODE="day"
+if [ "$HOUR" -ge 18 ] || [ "$HOUR" -lt 6 ]; then
+  MODE="night"
+fi
+log "Applying ${MODE} preset (hour=${HOUR}, TZ=IST)"
 
-for ip in "$C1" "$C2"; do
-  log "Applying ${mode} preset to ${ip} because ${why}"
-  resp=$(curl -sS --max-time 3 "http://${ip}:8080/${mode}" || true)
-  log "Response from ${ip}: ${resp:-<no response>}"
-done
+apply() {
+  local camip="$1" camname="$2"
+  local url="http://${camip}:8080/${MODE}"
+  log "${camname}: calling ${url}"
+  if RESP=$(curl -sS --max-time 3 "$url"); then
+    log "${camname}: response: ${RESP}"
+  else
+    log "${camname}: ERROR calling ${url}"
+  fi
+}
+
+apply "$CAM1" cam1
+apply "$CAM2" cam2
 SH
 sudo chmod +x /usr/local/bin/visdcam-daynight.sh
 
@@ -449,13 +467,12 @@ UNIT
 # Timer: run every day at 06:00 and 18:00
 sudo tee /etc/systemd/system/visdcam-daynight.timer >/dev/null <<'UNIT'
 [Unit]
-Description=Schedule day/night preset calls (06:00, 18:00)
+Description=Run day/night preset at boot and every hour (IST)
 
 [Timer]
-OnCalendar=*-*-* 06:00:00
-OnCalendar=*-*-* 18:00:00
+OnBootSec=30s
+OnCalendar=*-*-* *:00:00
 Persistent=true
-Unit=visdcam-daynight.service
 
 [Install]
 WantedBy=timers.target
